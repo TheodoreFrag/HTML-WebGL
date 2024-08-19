@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>WebGL Scene</title>
+    <style>
+        canvas { width: 100%; height: 100% }
+        body { margin: 0; }
+    </style>
+</head>
+<body>
+    <canvas id="glcanvas"></canvas>
+    <div>
+        <label for="viewAngle">View Angle:</label>
+        <input type="text" id="viewAngle" value="80">
+        <label for="viewDistance">View Distance:</label>
+        <input type="text" id="viewDistance" value="9">
+    </div>
+    <div>
+        <input type="radio" name="cameraPosition" value="left-front-top" checked> Left-Front-Top
+        <input type="radio" name="cameraPosition" value="left-front-bottom"> Left-Front-Bottom
+        <input type="radio" name="cameraPosition" value="left-back-top"> Left-Back-Top
+        <input type="radio" name="cameraPosition" value="left-back-bottom"> Left-Back-Bottom
+        <input type="radio" name="cameraPosition" value="right-front-top"> Right-Front-Top
+        <input type="radio" name="cameraPosition" value="right-front-bottom"> Right-Front-Bottom
+        <input type="radio" name="cameraPosition" value="right-back-top"> Right-Back-Top
+        <input type="radio" name="cameraPosition" value="right-back-bottom"> Right-Back-Bottom
+    </div>
+    <button onclick="redraw()">Redraw</button>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gl-matrix/2.8.1/gl-matrix-min.js"></script>
+    <script>
+        const canvas = document.getElementById('glcanvas');
+        const gl = canvas.getContext('webgl');
+
+        if (!gl) {
+            console.error('Unable to initialize WebGL. Your browser may not support it.');
+        }
+
+        const vsSource = `
+            attribute vec4 aVertexPosition;
+            attribute vec4 aVertexColor;
+            uniform mat4 uModelViewMatrix;
+            uniform mat4 uProjectionMatrix;
+            varying lowp vec4 vColor;
+            void main(void) {
+                gl_Position = uProjectionMatrix * uModelViewMatrix * aVertexPosition;
+                vColor = aVertexColor;
+            }`
+            ;
+
+        const fsSource = `
+            varying lowp vec4 vColor;
+            void main(void) {
+                gl_FragColor = vColor;
+            }
+        `;
+
+        const shaderProgram = initShaderProgram(gl, vsSource, fsSource);
+
+        const programInfo = {
+            program: shaderProgram,
+            attribLocations: {
+                vertexPosition: gl.getAttribLocation(shaderProgram, 'aVertexPosition'),
+                vertexColor: gl.getAttribLocation(shaderProgram, 'aVertexColor'),
+            },
+            uniformLocations: {
+                projectionMatrix: gl.getUniformLocation(shaderProgram, 'uProjectionMatrix'),
+                modelViewMatrix: gl.getUniformLocation(shaderProgram, 'uModelViewMatrix'),
+            },
+        };
+
+        const buffers = initBuffers(gl);
+
+        function initBuffers(gl) {
+            const positionBuffer = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+            const positions = [
+                // Cube vertices
+                -1.0, -1.0,  1.0,
+                 1.0, -1.0,  1.0,
+                 1.0,  1.0,  1.0,
+                -1.0,  1.0,  1.0,
+                -1.0, -1.0, -1.0,
+                 1.0, -1.0, -1.0,
+                 1.0,  1.0, -1.0,
+                -1.0,  1.0, -1.0,
+            ];
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
+
+            const faceColors = [
+                [1.0,  0.0,  0.0,  1.0],    // Front face
+                [0.0,  1.0,  0.0,  1.0],    // Back face
+                [0.0,  0.0,  1.0,  1.0],    // Top face
+                [1.0,  1.0,  0.0,  1.0],    // Bottom face
+                [1.0,  0.0,  1.0,  1.0],    // Right face
+                [0.0,  1.0,  1.0,  1.0],    // Left face
+            ];
+
+            let colors = [];
+            for (const color of faceColors) {
+                colors = colors.concat(color, color, color, color);
+            }
+
+            const colorBuffer = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colors), gl.STATIC_DRAW);
+
+            const indexBuffer = gl.createBuffer();
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
+            const indices = [
+                0,  1,  2,      0,  2,  3,
+                4,  5,  6,      4,  6,  7,
+                3,  2,  6,      3,  6,  7,
+                4,  5,  1,      4,  1,  0,
+                1,  5,  6,      1,  6,  2,
+                4,  0,  3,      4,  3,  7,
+            ];
+            gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.STATIC_DRAW);
+
+            return {
+                position: positionBuffer,
+                color: colorBuffer,
+                indices: indexBuffer,
+            };
+        }
+
+        function drawScene(gl, programInfo, buffers, viewAngle, viewDistance, cameraPosition) {
+            gl.clearColor(0.2, 0.2, 0.2, 1.0);
+            gl.clearDepth(1.0);
+            gl.enable(gl.DEPTH_TEST);
+            gl.depthFunc(gl.LEQUAL);
+
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+            const fieldOfView = viewAngle * Math.PI / 180;
+            const aspect = gl.canvas.clientWidth / gl.canvas.clientHeight;
+            const zNear = 0.01;
+            const zFar = 1000.0 * viewDistance;
+            const projectionMatrix = mat4.create();
+
+            mat4.perspective(projectionMatrix,
+                             fieldOfView,
+                             aspect,
+                             zNear,
+                             zFar);
+
+            const cameraPositionMap = {
+                'left-front-top': [-viewDistance, viewDistance, viewDistance],
+                'left-front-bottom': [-viewDistance, viewDistance, -viewDistance],
+                'left-back-top': [-viewDistance, -viewDistance, viewDistance],
+                'left-back-bottom': [-viewDistance, -viewDistance, -viewDistance],
+                'right-front-top': [viewDistance, viewDistance, viewDistance],
+                'right-front-bottom': [viewDistance, viewDistance, -viewDistance],
+                'right-back-top': [viewDistance, -viewDistance, viewDistance],
+                'right-back-bottom': [viewDistance, -viewDistance, -viewDistance]
+            };
+
+            const eye = cameraPositionMap[cameraPosition];
+            const target = [0.0, 0.0, 0.0];
+            const up = [0.0, 0.0, 1.0];
+
+            const modelViewMatrix = mat4.create();
+            mat4.lookAt(modelViewMatrix, eye, target, up);
+
+            // Draw the cube
+            drawCube(gl, programInfo, buffers, modelViewMatrix, projectionMatrix);
+
+            // Draw the table
+            drawTable(gl, programInfo, buffers, modelViewMatrix, projectionMatrix);
+
+            // Draw the chair
+            drawChair(gl, programInfo, buffers, modelViewMatrix, projectionMatrix);
+        }
+
+        function drawCube(gl, programInfo, buffers, modelViewMatrix, projectionMatrix) {
+            {
+                const numComponents = 3;
+                const type = gl.FLOAT;
+                const normalize = false;
+                const stride = 0;
+                const offset = 0;
+                gl.bindBuffer(gl.ARRAY_BUFFER, buffers.position);
+                gl.vertexAttribPointer(
+                    programInfo.attribLocations.vertexPosition,
+                    numComponents,
+                    type,
+                    normalize,
+                    stride,
+                    offset);
+                gl.enableVertexAttribArray(programInfo.attribLocations.vertexPosition);
+            }
+
+            {
+                const numComponents = 4;
+                const type = gl.FLOAT;
+                const normalize = false;
+                const stride = 0;
+                const offset = 0;
+                gl.bindBuffer(gl.ARRAY_BUFFER, buffers.color);
+                gl.vertexAttribPointer(
+                    programInfo.attribLocations.vertexColor,
+                    numComponents,
+                    type,
+                    normalize,
+                    stride,
+                    offset);
+                gl.enableVertexAttribArray(programInfo.attribLocations.vertexColor);
+            }
+
+            gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buffers.indices);
+
+            gl.useProgram(programInfo.program);
+
+            gl.uniformMatrix4fv(
+                programInfo.uniformLocations.projectionMatrix,
+                false,
+                projectionMatrix);
+            gl.uniformMatrix4fv(
+                programInfo.uniformLocations.modelViewMatrix,
+                false,
+                modelViewMatrix);
+
+            {
+                const vertexCount = 36;
+                const type = gl.UNSIGNED_SHORT;
+                const offset = 0;
+                gl.drawElements(gl.TRIANGLES, vertexCount, type, offset);
+            }
+        }
+
+    function drawTable(gl, programInfo, buffers, modelViewMatrix, projectionMatrix) {
+    const tableModelViewMatrix = mat4.clone(modelViewMatrix);
+
+    // Draw top of the table
+    const topModelViewMatrix = mat4.clone(tableModelViewMatrix);
+    mat4.translate(topModelViewMatrix, topModelViewMatrix, [0.0, 0.0, 0.5]);
+    mat4.scale(topModelViewMatrix, topModelViewMatrix, [10.0, 10.0, 0.5]);
+    drawCube(gl, programInfo, buffers, topModelViewMatrix, projectionMatrix);
+
+    // Common transformations for table legs
+    const legScale = [0.5, 0.5, 7.5];
+    const legPositions = [
+        [-9.5, 9.5, -7.5],
+        [9.5, 9.5, -7.5],
+        [-9.5, -9.5, -7.5],
+        [9.5, -9.5, -7.5]
+    ];
+
+    legPositions.forEach(pos => {
+        const legModelViewMatrix = mat4.clone(tableModelViewMatrix);
+        mat4.translate(legModelViewMatrix, legModelViewMatrix, pos);
+        mat4.scale(legModelViewMatrix, legModelViewMatrix, legScale);
+        drawCube(gl, programInfo, buffers, legModelViewMatrix, projectionMatrix);
+    });
+}
+
+    function drawChair(gl, programInfo, buffers, modelViewMatrix, projectionMatrix) {
+    // Adjust the chair's overall position relative to the table
+    const chairOffset = [10.0, 0.0, -8.0]; 
+    const chairModelViewMatrix = mat4.clone(modelViewMatrix);
+    mat4.translate(chairModelViewMatrix, chairModelViewMatrix, chairOffset);
+
+    // Draw chair legs
+    const legPositions = [
+        [-2.5, 2.5, -3.75],
+        [2.5, 2.5, -3.75],
+        [-2.5, -2.5, -3.75],
+        [2.5, -2.5, -3.75]
+    ];
+
+    legPositions.forEach(pos => {
+        const legModelViewMatrix = mat4.clone(chairModelViewMatrix);
+        mat4.translate(legModelViewMatrix, legModelViewMatrix, pos);
+        mat4.scale(legModelViewMatrix, legModelViewMatrix, [0.5, 0.5, 3.75]);
+        drawCube(gl, programInfo, buffers, legModelViewMatrix, projectionMatrix);
+    });
+    
+    // Draw chair seat
+    const seatModelViewMatrix = mat4.clone(chairModelViewMatrix);
+    mat4.translate(seatModelViewMatrix, seatModelViewMatrix, [0.0, 0.0, -0.25]);
+    mat4.scale(seatModelViewMatrix, seatModelViewMatrix, [3.0, 3.0, 0.5]);
+    drawCube(gl, programInfo, buffers, seatModelViewMatrix, projectionMatrix);
+
+    // Draw chair back seat
+    const seatBackModelViewMatrix = mat4.clone(chairModelViewMatrix);
+    mat4.translate(seatBackModelViewMatrix, seatBackModelViewMatrix, [ 3.0, 0.0, 3.0]); 
+    mat4.rotateY(seatBackModelViewMatrix, seatBackModelViewMatrix, Math.PI / 2); 
+    mat4.scale(seatBackModelViewMatrix, seatBackModelViewMatrix, [3.0, 3.0, 0.5]);
+    drawCube(gl, programInfo, buffers, seatBackModelViewMatrix, projectionMatrix);
+}
+
+        function redraw() {
+            const viewAngle = parseFloat(document.getElementById('viewAngle').value);
+            const viewDistance = parseFloat(document.getElementById('viewDistance').value);
+            const cameraPosition = document.querySelector('input[name="cameraPosition"]:checked').value;
+            drawScene(gl, programInfo, buffers, viewAngle, viewDistance, cameraPosition);
+        }
+
+        function initShaderProgram(gl, vsSource, fsSource) {
+            const vertexShader = loadShader(gl, gl.VERTEX_SHADER, vsSource);
+            const fragmentShader = loadShader(gl, gl.FRAGMENT_SHADER, fsSource);
+
+            const shaderProgram = gl.createProgram();
+            gl.attachShader(shaderProgram, vertexShader);
+            gl.attachShader(shaderProgram, fragmentShader);
+            gl.linkProgram(shaderProgram);
+
+            if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+                console.error('Unable to initialize the shader program: ' + gl.getProgramInfoLog(shaderProgram));
+                return null;
+            }
+
+            return shaderProgram;
+        }
+
+        function loadShader(gl, type, source) {
+            const shader = gl.createShader(type);
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                console.error('An error occurred compiling the shaders: ' + gl.getShaderInfoLog(shader));
+                gl.deleteShader(shader);
+                return null;
+            }
+
+            return shader;
+        }
+
+        redraw();
+    </script>
+</body>
+</html>
